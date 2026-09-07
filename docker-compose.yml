@@ -1,0 +1,105 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: printhub_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-printhub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-printhub_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-printhub}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-printhub}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: printhub_redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: printhub_api
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+    environment:
+      DATABASE_URL: postgresql+async://${POSTGRES_USER:-printhub}:${POSTGRES_PASSWORD:-printhub_secret}@postgres:5432/${POSTGRES_DB:-printhub}
+      REDIS_URL: redis://redis:6379/0
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+      ADMIN_IDS: ${ADMIN_IDS}
+      SECRET_KEY: ${SECRET_KEY:-change_me_in_production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src
+      - file_storage:/app/files
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: printhub_bot
+    command: python -m src.bot.runner
+    environment:
+      DATABASE_URL: postgresql+async://${POSTGRES_USER:-printhub}:${POSTGRES_PASSWORD:-printhub_secret}@postgres:5432/${POSTGRES_DB:-printhub}
+      REDIS_URL: redis://redis:6379/0
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+      ADMIN_IDS: ${ADMIN_IDS}
+      SECRET_KEY: ${SECRET_KEY:-change_me_in_production}
+    depends_on:
+      - api
+      - postgres
+      - redis
+    volumes:
+      - ./src:/app/src
+      - file_storage:/app/files
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: printhub_worker
+    command: python -m src.workers.runner
+    environment:
+      DATABASE_URL: postgresql+async://${POSTGRES_USER:-printhub}:${POSTGRES_PASSWORD:-printhub_secret}@postgres:5432/${POSTGRES_DB:-printhub}
+      REDIS_URL: redis://redis:6379/0
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+      ADMIN_IDS: ${ADMIN_IDS}
+      SECRET_KEY: ${SECRET_KEY:-change_me_in_production}
+    depends_on:
+      - api
+      - postgres
+      - redis
+    volumes:
+      - ./src:/app/src
+      - file_storage:/app/files
+
+volumes:
+  postgres_data:
+  redis_data:
+  file_storage:
+
+networks:
+  default:
+    name: printhub_network
